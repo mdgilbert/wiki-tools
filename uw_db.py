@@ -20,6 +20,7 @@ import uw_settings
 
 class uw_db:
     """Manages database connections for our local tools"""
+    conn = {}
 
     def __init__(self):
         """
@@ -31,8 +32,10 @@ class uw_db:
         """
         Returns a cursor for a given database
         """
-        conn = MySQLdb.connect(host = uw_settings.db[db]['host'], db = uw_settings.db[db]['db'], user = uw_settings.db[db]['user'], passwd = uw_settings.db[db]['pass'], use_unicode=1, charset="utf8")
-        cursor = conn.cursor()
-        return cursor
+        # Connect to the database if required
+        if db not in self.conn:
+            self.conn[db] = MySQLdb.connect(host = uw_settings.db[db]['host'], db = uw_settings.db[db]['db'], user = uw_settings.db[db]['user'], passwd = uw_settings.db[db]['pass'], use_unicode=1, charset="utf8")
+
+        return self.conn[db].cursor()
 
 
