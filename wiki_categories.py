@@ -29,7 +29,6 @@ class wikiCat(object):
         """
         Initialize the object
         """
-        #self.cursor = uw_db().getCursorForDB(self.wikiDB)
         pass
 
     def getCategories(self, query = None):
@@ -43,21 +42,19 @@ class wikiCat(object):
     ## select page.page_title as categories FROM enwiki_p.categorylinks INNER JOIN enwiki_p.page ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = "WikiProject_Zoo" AND page.page_namespace = 14;
     ## Then, after getting the above list call the same function again 
 
-    def getPagesInCategory(self, category, depth = 4, callback = None):
+    def getPagesInCategory(self, category, depth = 4, callback = None, id = None, thread = None):
         """
         Returns pages in a given category
         Inputs:
             category - the category we want to get pages for
             depth - the amount of subcategories we will traverse to find all pages.  Set to -1 for no limit (probably a bad idea?)
-            callback - If given, this callback function will be called for each chunk of data returned.  Used to 
+            callback - Required, this callback function will be called for each chunk of data returned.  Used to 
                 allow bucketing inserts to avoid out of memeory issues
         Returns:
-            A sequence of pages containing subpages, containing: (<page id>, <parent cat>, <parent cat id>)
-            Where, project id is the toolserver  page id for the project page, and parent cat and parent cat id are
-            the Toolserver category id and title for the parent.  Parent cat and parent cat id are passed to allow users
-            to recreate the hierarchical category structure if desired.
+            Returns nothing - a function that handles page data should be passed in as a callback.  This 
+            will be called for every 1000 pages.
         """
-        self.cursor = uw_db().getCursorForDB(self.wikiDB)
+        self.cursor = uw_db().getCursorForDB(self.wikiDB, thread)
 
         pages = ()
 
@@ -72,8 +69,11 @@ class wikiCat(object):
             if 1:
                 #print "Fetching sub-pages for category: " + category + ", depth: " + str(depth)
                 self.cursor.execute('''SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id" FROM categorylinks WHERE cl_to = %s''', (parent[1], parent[0], category))
-                pages = self.cursor.fetchall();
-                #while pages = self.cursor.fetchmany(10000) and pages:
+                while True:
+                    pages = self.cursor.fetchmany(1000)
+                    if not pages:
+                        break
+                    callback(pages, id)
 
             # If this category has sub-categories, append all their pages as well
             if parent[3] > 0 and depth != 0:
@@ -81,10 +81,10 @@ class wikiCat(object):
                 self.cursor.execute('''SELECT page.page_title as "parent_category" FROM categorylinks INNER JOIN page ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = %s AND page.page_namespace = 14''', (parent[1]))
                 subcats = self.cursor.fetchall()
                 for subcat in subcats:
-                    pages += self.getPagesInCategory(subcat[0], depth = depth - 1)
+                    self.getPagesInCategory(subcat[0], depth = depth - 1, callback = callback, id = id, thread = thread)
 
         self.cursor.close()
-        return pages
+        return None
 
 class localCat(object):
     """Manages category requests from the UW db"""
@@ -95,7 +95,6 @@ class localCat(object):
         """
         Initialize the object
         """
-        #self.cursor = uw_db().getCursorForDB(self.localDB)
         pass
 
     def getCategories(self):
@@ -110,19 +109,6 @@ class localCat(object):
         """
         pass
 
-    def testPrintCat(self, category):
-        """
-        Test function, prints info for a given category
-        """
-        self.cursor = uw_db().getCursorForDB(self.localDB)
-        self.cursor.execute('''SELECT * FROM project LIMIT 1''')
-        row = self.cursor.fetchone()
-        if row:
-            print "Project fetched: "
-            print row
-            print "First index: " + str(row[0])
-
-        self.cursor.close()
 
 if __name__ == "__main__":
     #print "Updating category list in local database from the Toolserver"

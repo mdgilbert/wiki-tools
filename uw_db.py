@@ -28,14 +28,16 @@ class uw_db:
         """
         pass
 
-    def getCursorForDB(self, db):
+    def getCursorForDB(self, db, thread):
         """
         Returns a cursor for a given database
         """
-        # Connect to the database if required
-        if db not in self.conn:
-            self.conn[db] = MySQLdb.connect(host = uw_settings.db[db]['host'], db = uw_settings.db[db]['db'], user = uw_settings.db[db]['user'], passwd = uw_settings.db[db]['pass'], use_unicode=1, charset="utf8")
 
-        return self.conn[db].cursor()
+        # Connect to the database if required
+        key = db + "-" + thread
+        if key not in self.conn:
+            self.conn[key] = MySQLdb.connect(host = uw_settings.db[db]['host'], db = uw_settings.db[db]['db'], user = uw_settings.db[db]['user'], passwd = uw_settings.db[db]['pass'], use_unicode=True, charset="utf8")
+
+        return self.conn[key].cursor()
 
 
