@@ -15,25 +15,73 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import MySQLdb
-import wikitools
+import wiki_categories
+import wiki_projects
+from uw_db import uw_db
 
-#Local imports
-import wiki-categories
-import uw-settings
-import uw-categories
+# Allow threading
+import Queue
+import threading
+import time
 
+queue = Queue.Queue(10)
 
-#wiki = wikitools.Wiki(settings.apiurl)
-conn = MySQLdb.connect(host = settings.enwiki_p.host, db = settings.enwiki_p.db, use_unicode=1, charset="utf8")
-cursor = conn.cursor()
+class updateAssessments(threading.Thread):
+    """ Threaded approach to updating article assessments """
 
-## GLOBALS ##
+    cursor = None
 
-## FUNCTIONS ##
-def 
+    def __init__(self, queue):
+        threading.Thread.__init__(self)
+        self.queue = queue
 
-## MAIN ##
+    def run(self):
+        while True:
+            # Get the assessmet we're fetching
+            qual = self.queue.get()
 
+            print "%s - Looking up articles with category: %s." % (self.getName(), qual)
+            wiki_categories.wikiCat().getPagesInCategory(qual, callback = self.insertAssessments, includeTitle = True)
+
+            print "%s - Finished loading pages with category: %s." % (self.getName(), qual)
+            self.queue.task_done()
+
+    def insertAssessments(self, pages, id):
+            self.cursor = uw_db().getCursorForDB("reflex_relations", self.getName())
+
+            # Pages returned will be identified by the talk page id.  We need to add in the
+            # article page id to the local db.
+            # ie, insert into n_page_assessments (pa_id, pa_assessment) values ( (select tp_id from ts_pages where tp_title = "AC/DC" AND tp_namespace = 0), "featured");
+
+            # Prep the insert array
+            values = []
+            space = []
+            for p in pages:
+                values += ["(SELECT tp_id FROM ts_pages WHERE tp_title = '%s' AND tp_namespace = 0)" % p[3], unicode(p[1])]
+                space.append("(%s,%s)")
+
+            if len(pages):
+                print "%s - Inserting %s pages with assessment: %s." % (self.getName(), str(len(pages)), qual)
+                self.cursor.execute('INSERT INTO n_page_assessments (pa_id, pa_assessment) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE pa_id = pa_id', values)
+
+            self.cursor.close()
+
+def main():
+    # Clear out the old data
+
+    # Spawn a pool of threads
+    for i in range(3):
+        u = updateAssessments(queue)
+        u.setDaemon(True)
+        u.start()
+
+    # Populate queue with data
+    for assessment in ["Wikipedia_featured_articles", "Wikipedia_good_articles", "Wikipedia_stubs", "Stub_categories"]:
+        queue.put(assessment)
+
+    # Wait on the queue until everything is finished
+    queue.join()
+
+main()
 
 

@@ -42,7 +42,7 @@ class wikiCat(object):
     ## select page.page_title as categories FROM enwiki_p.categorylinks INNER JOIN enwiki_p.page ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = "WikiProject_Zoo" AND page.page_namespace = 14;
     ## Then, after getting the above list call the same function again 
 
-    def getPagesInCategory(self, category, depth = 4, callback = None, id = None, thread = None):
+    def getPagesInCategory(self, category, depth = 4, callback = None, id = None, thread = None, includeTitle = None):
         """
         Returns pages in a given category
         Inputs:
@@ -68,7 +68,10 @@ class wikiCat(object):
             #if category == '"Template:Football_kit"_materials':
             if 1:
                 #print "Fetching sub-pages for category: " + category + ", depth: " + str(depth)
-                self.cursor.execute('''SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id" FROM categorylinks WHERE cl_to = %s''', (parent[1], parent[0], category))
+                if includeTitle:
+                    self.cursor.execute('''SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id", page_title FROM categorylinks JOIN page ON cl_from = page_id WHERE cl_to = %s''', (parent[1], parent[0], category))
+                else:
+                    self.cursor.execute('''SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id" FROM categorylinks WHERE cl_to = %s''', (parent[1], parent[0], category))
                 while True:
                     pages = self.cursor.fetchmany(1000)
                     if not pages:
