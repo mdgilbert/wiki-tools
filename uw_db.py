@@ -17,10 +17,14 @@
 
 import MySQLdb
 import uw_settings
+import time
+import sys
 
 class uw_db:
     """Manages database connections for our local tools"""
     conn = {}
+    thread = None
+    db = None
 
     def __init__(self):
         """
@@ -34,10 +38,42 @@ class uw_db:
         """
 
         # Connect to the database if required
+        self.thread = thread
+        self.db = db
         key = db + "-" + thread
         if key not in self.conn:
             self.conn[key] = MySQLdb.connect(host = uw_settings.db[db]['host'], db = uw_settings.db[db]['db'], user = uw_settings.db[db]['user'], passwd = uw_settings.db[db]['pass'], use_unicode=True, charset="utf8")
 
         return self.conn[key].cursor()
 
+    def renewConnection(self):
+        """
+        Renews a potentially closed DB connection
+        """
+        key = self.db + "-" + self.thread
+        # Attempt to close the previous connection
+        try:
+            self.conn[key].close()
+        except:
+            pass
+        del self.conn[key]
+        return self.getCursorForDB(self.db, self.thread)
+
+    def execute(self, cursor, query, values = (), count = 4):
+        """
+        Executes a query with a given cursor.  If the DB connection is lost, will retry <count> times
+        """
+        if count > 0:
+            try:
+                #print "Query: " + query
+                cursor.execute(query, values)
+            except:
+                print "DB query failed: " + str(sys.exc_info()[0])
+                print "Trying with new connection in 20..."
+                time.sleep(20)
+                cursor = self.renewConnection()
+                self.execute(cursor, query, values = values, count = count-1)
+        else:
+            print "Exceeded failure count for this query.  Exiting."
+            raise Exception("MaxFailuresReached", "Multiple failures to execute query.")
 

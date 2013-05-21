@@ -17,6 +17,7 @@
 
 import wiki_categories
 import wiki_projects
+import wiki_history
 from uw_db import uw_db
 
 # Allow threading
@@ -25,6 +26,7 @@ import threading
 import time
 
 queue = Queue.Queue(10)
+history = wiki_history.localHistory("project")
 
 class updateProjects(threading.Thread):
     """ Threaded approach to updating projects """
@@ -47,9 +49,11 @@ class updateProjects(threading.Thread):
             # When processing is complete, signal to queue the job is done
             print "%s - [%s] Finished getting pages for project: %s" % (self.getName(), self.project, project[1])
             self.queue.task_done()
+            history.setComplete(self.project, thread = self.getName())
 
     def insertPages(self, pages, id):
-        self.cursor = uw_db().getCursorForDB("reflex_relations", self.getName())
+        db = uw_db()
+        self.cursor = db.getCursorForDB("reflex_relations", self.getName())
 
         values = []
         space = []
@@ -60,12 +64,16 @@ class updateProjects(threading.Thread):
         # Insert the pages
         if len(pages):
             print "%s - [%s] Inserting %s pages." % (self.getName(), self.project, str( len(pages) ))
-            self.cursor.execute('INSERT INTO n_project_pages (pp_id, pp_project_id, pp_parent_category, pp_parent_category_id) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE pp_id = pp_id', values)
+            query = 'INSERT INTO n_project_pages (pp_id, pp_project_id, pp_parent_category, pp_parent_category_id) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE pp_id = pp_id'
+            db.execute(self.cursor, query, values)
 
         self.cursor.close()
 
 start = time.time()
 def main():
+    # Clear the history
+    history.clearHistory(keepDays = 30).getHistory()
+
     # Clear old data from the tables
     #print "Clearing previous project and page data."
     #wiki_projects.localProj().clearProjects()
@@ -76,6 +84,10 @@ def main():
 
     projects = wiki_projects.localProj().getProjects()
     print "Loaded " + str( len(projects) ) + " projects."
+
+    # Fetch the projects that have already been completed
+    completed = {}
+
 
     # Insert all the projects
     #print "Inserting %s projects" % (str(len(projects)),)
@@ -89,7 +101,10 @@ def main():
 
     # Populate queue with data
     for project in projects:
-        queue.put(project)
+        if not history.isComplete(project[1]):
+            queue.put(project)
+        else:
+            print "Skipping project category: " + project[1]
 
     # Wait on the queue until everything is finished
     queue.join()

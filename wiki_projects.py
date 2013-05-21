@@ -21,6 +21,8 @@ import wiki_categories
 import uw_settings
 from uw_db import uw_db
 
+db = uw_db()
+
 class wikiProj(object):
     """Class for fetching project data from the toolserver"""
     cursor = None
@@ -47,20 +49,20 @@ class wikiProj(object):
         Returns:
             A sequence of projects including (<page id>, <project title>)
         """
-        self.cursor = uw_db().getCursorForDB(self.wikiDB, thread = "p1")
+        self.cursor = db.getCursorForDB(self.wikiDB, thread = "p1")
 
         f = " AND page_title LIKE '%%" + filter + "%%' " if filter else ""
-        self.cursor.execute('''(SELECT page.page_id, page.page_title FROM %s.page INNER JOIN %s.category ON page.page_title = category.cat_title WHERE page_namespace = 4 AND page_title LIKE "WikiProject\_%%" %s GROUP BY page_id) UNION (SELECT page.page_id, page.page_title FROM %s.page INNER JOIN %s.categorylinks ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = "Active_WikiProjects" AND page.page_namespace = 4 AND page.page_title NOT LIKE "WikiProject_%%" %s GROUP BY page_id) ORDER BY page_id ASC''' % (self.wikiDB, self.wikiDB, f, self.wikiDB, self.wikiDB, f))
-
+        query = '(SELECT page.page_id, page.page_title FROM %s.page INNER JOIN %s.category ON page.page_title = category.cat_title WHERE page_namespace = 4 AND page_title LIKE "WikiProject\_%%" %s GROUP BY page_id) UNION (SELECT page.page_id, page.page_title FROM %s.page INNER JOIN %s.categorylinks ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = "Active_WikiProjects" AND page.page_namespace = 4 AND page.page_title NOT LIKE "WikiProject_%%" %s GROUP BY page_id) ORDER BY page_id ASC'
+        db.execute(self.cursor, query, (self.wikiDB, self.wikiDB, f, self.wikiDB, self.wikiDB, f))
         rows = self.cursor.fetchall()
         self.cursor.close()
         return rows
 
-    def getProjectPages(self, project, callback = None, id = None, thread = None):
+    def getProjectPages(self, project, callback = None, id = None, thread = None, includeTitle = None):
         """
         Fetches all the pages that are in a given project
         """
-        return wiki_categories.wikiCat().getPagesInCategory(project, callback = callback, id = id, thread = thread)
+        return wiki_categories.wikiCat().getPagesInCategory(project, callback = callback, id = id, thread = thread, includeTitle = includeTitle)
 
     def testPrintProject(self, project):
         """
@@ -87,10 +89,12 @@ class localProj(object):
         Returns:
             A sequence of projects including (<page id>, <project title>)
         """
-        self.cursor = uw_db().getCursorForDB(self.localDB, thread = "p1")
+        
+        self.cursor = db.getCursorForDB(self.localDB, thread = "p1")
 
         f = " AND page_title LIKE '%%" + filter + "%%' " if filter else ""
-        self.cursor.execute('''SELECT p_id, p_title FROM n_project ORDER BY p_title ASC''')
+        query = 'SELECT p_id, p_title FROM n_project ORDER BY p_title ASC'
+        db.execute(self.cursor, query)
         rows = self.cursor.fetchall()
         self.cursor.close()
         return rows
@@ -99,9 +103,9 @@ class localProj(object):
         """
         Clears out all project data from the local DB
         """
-        self.cursor = uw_db().getCursorForDB(self.localDB, thread = "p1")
-        self.cursor.execute('''DELETE FROM %s.n_project''' % (self.localDB,))
-        self.cursor.execute('''DELETE FROM %s.n_project_pages''' % (self.localDB,))
+        self.cursor = db.getCursorForDB(self.localDB, thread = "p1")
+        db.execute(self.cursor, 'DELETE FROM n_project')
+        db.execute(self.cursor, 'DELETE FROM n_project_pages')
         self.cursor.close()
 
     def insertProjects(self, projects):
@@ -110,14 +114,15 @@ class localProj(object):
         Input: 
             projects - a sequence of projects of the form ((<project id>, <project title>), )
         """
-        self.cursor = uw_db().getCursorForDB(self.localDB, thread = "p1")
+        self.cursor = db.getCursorForDB(self.localDB, thread = "p1")
 
         values = []
         space = []
         for p in projects:
             values += [str(p[0]), p[1]]
             space.append("(%s,%s)")
-        self.cursor.execute('INSERT INTO n_project (p_id, p_title) VALUES ' + ','.join(space), values)
+        query = 'INSERT INTO n_project (p_id, p_title) VALUES ' + ','.join(space)
+        db.execute(self.cursor, query, values)
         self.cursor.close()
 
 

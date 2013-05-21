@@ -20,6 +20,8 @@ import re
 import uw_settings
 from uw_db import uw_db
 
+db = uw_db()
+
 class wikiCat(object):
     """Manages category requests from the Toolserver DB"""
     cursor = None
@@ -54,13 +56,15 @@ class wikiCat(object):
             Returns nothing - a function that handles page data should be passed in as a callback.  This 
             will be called for every 1000 pages.
         """
-        self.cursor = uw_db().getCursorForDB(self.wikiDB, thread)
+        self.cursor = db.getCursorForDB(self.wikiDB, thread)
 
         pages = ()
 
         # First, get basic information for the category
         #print "Fetching category information for " + category
-        self.cursor.execute('''SELECT cat_id, cat_title, cat_pages, cat_subcats FROM category WHERE category.cat_title = %s''', (category,))
+        #self.cursor.execute('''SELECT cat_id, cat_title, cat_pages, cat_subcats FROM category WHERE category.cat_title = %s''', (category,))
+        query = 'SELECT cat_id, cat_title, cat_pages, cat_subcats FROM category WHERE category.cat_title = %s'
+        db.execute(self.cursor, query, (category,))
         parent = self.cursor.fetchone()
 
         if parent:
@@ -69,9 +73,13 @@ class wikiCat(object):
             if 1:
                 #print "Fetching sub-pages for category: " + category + ", depth: " + str(depth)
                 if includeTitle:
-                    self.cursor.execute('''SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id", page_title FROM categorylinks JOIN page ON cl_from = page_id WHERE cl_to = %s''', (parent[1], parent[0], category))
+                    #self.cursor.execute('''SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id", page_title FROM categorylinks JOIN page ON cl_from = page_id WHERE cl_to = %s''', (parent[1], parent[0], category))
+                    query = 'SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id", page_title FROM categorylinks JOIN page ON cl_from = page_id WHERE cl_to = %s'
+                    db.execute(self.cursor, query, (parent[1], parent[0], category))
                 else:
-                    self.cursor.execute('''SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id" FROM categorylinks WHERE cl_to = %s''', (parent[1], parent[0], category))
+                    #self.cursor.execute('''SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id" FROM categorylinks WHERE cl_to = %s''', (parent[1], parent[0], category))
+                    query = 'SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id" FROM categorylinks WHERE cl_to = %s'
+                    db.execute(self.cursor, query, (parent[1], parent[0], category))
                 while True:
                     pages = self.cursor.fetchmany(1000)
                     if not pages:
@@ -81,10 +89,12 @@ class wikiCat(object):
             # If this category has sub-categories, append all their pages as well
             if parent[3] > 0 and depth != 0:
                 #print "Fetching sub-categories for category: " + category + ", depth: " + str(depth)
-                self.cursor.execute('''SELECT page.page_title as "parent_category" FROM categorylinks INNER JOIN page ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = %s AND page.page_namespace = 14''', (parent[1]))
+                #self.cursor.execute('''SELECT page.page_title as "parent_category" FROM categorylinks INNER JOIN page ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = %s AND page.page_namespace = 14''', (parent[1]))
+                query = 'SELECT page.page_title as "parent_category" FROM categorylinks INNER JOIN page ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = %s AND page.page_namespace = 14'
+                db.execute(self.cursor, query, (parent[1],))
                 subcats = self.cursor.fetchall()
                 for subcat in subcats:
-                    self.getPagesInCategory(subcat[0], depth = depth - 1, callback = callback, id = id, thread = thread)
+                    self.getPagesInCategory(subcat[0], depth = depth - 1, callback = callback, id = id, thread = thread, includeTitle = includeTitle)
 
         self.cursor.close()
         return None
