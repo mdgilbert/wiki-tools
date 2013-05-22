@@ -56,7 +56,8 @@ class uw_db:
             self.conn[key].close()
         except:
             pass
-        del self.conn[key]
+        if key in self.conn:
+            del self.conn[key]
         return self.getCursorForDB(self.db, self.thread)
 
     def execute(self, cursor, query, values = (), count = 4):
@@ -75,5 +76,5 @@ class uw_db:
                 self.execute(cursor, query, values = values, count = count-1)
         else:
             print "Exceeded failure count for this query.  Exiting."
-            raise Exception("MaxFailuresReached", "Multiple failures to execute query.")
+            raise Exception("MaxFailuresReached", "Multiple failures attempting to execute query.")
 

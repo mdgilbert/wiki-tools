@@ -83,7 +83,7 @@ class updateAssessments(threading.Thread):
                 except:
                     print "Error with first or second value: " + p[3]
                     print "Error with second value: " + self.category
-                    print "Error: ", sys.exc_info()[0]
+                    print "Error: ", str(sys.exc_info()[0])
                     raise
             else:
                 #values += [0, p[1].decode("utf-8", "replace")]
