@@ -69,7 +69,7 @@ class uw_db:
                 #print "Query: " + query
                 cursor.execute(query, values)
             except:
-                print "DB query failed: " + str(sys.exc_info()[0])
+                print "DB query failed: " + str(sys.exc_info()[1])
                 print "Trying with new connection in 20..."
                 time.sleep(20)
                 cursor = self.renewConnection()
