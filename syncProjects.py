@@ -33,14 +33,7 @@ CREATE TABLE `project_pages` (
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 """
 
-# Add our local plugins
-#import os,sys,inspect
-#for f in ('plugin_mdg_out', 'plugin_mdg_db'):
-#    sub = os.path.realpath(os.path.abspath(os.path.join(os.path.split(inspect.getfile( inspect.currentframe() ))[0], f)))
-#    if sub not in sys.path:
-#        sys.path.insert(0, sub)
-#from mdg_db import mdg_db
-#from mdg_out import out
+# Import local tools
 from pycommon.util.util import *
 from pycommon.db.db import db
 
@@ -51,7 +44,6 @@ import time
 
 queue = Queue.Queue(10)
 chunkSize = 10000
-db = db()
 
 localDb = "reflex_relations_2014"
 remoteDb = "enwiki_p_local"
@@ -65,8 +57,8 @@ class syncProjects(threading.Thread):
     def __init__(self, queue):
         threading.Thread.__init__(self)
         self.queue = queue
-        self.rcursor = db.getCursorForDB(remoteDb, self.getName())
-        self.lcursor = db.getCursorForDB(localDb, self.getName())
+        self.rdb = db(remoteDb, self.getName())
+        self.ldb = db(localDb, self.getName())
 
     def run(self):
         while True:
@@ -97,17 +89,16 @@ class syncProjects(threading.Thread):
 
         # Get basic category information
         query = 'SELECT cat_id, cat_title, cat_pages, cat_subcats FROM category WHERE category.cat_title = %s'
-        self.rcursor = db.getCursorForDB(remoteDb, self.getName())
-        self.rcursor = db.execute(self.rcursor, query, (category,))
-        parent = self.rcursor.fetchone()
+        rc = self.rdb.execute(query, (category,))
+        parent = rc.fetchone()
         if parent:
             # Get the sub-pages
             query = 'SELECT cl_from as "page_id", %s as "parent_category", %s as "parent_category_id" FROM categorylinks WHERE cl_to = %s'
-            self.rcursor = db.execute(self.rcursor, query, (parent['cat_title'], parent['cat_id'], category))
+            rc = self.rdb.execute(query, (parent['cat_title'], parent['cat_id'], category))
 
             # Insert sub-pages by bucket
             while True:
-                pages = self.rcursor.fetchmany(10000)
+                pages = rc.fetchmany(10000)
                 if not pages:
                     break
                 self.insertPages(pages, cat_id)
@@ -115,17 +106,16 @@ class syncProjects(threading.Thread):
             # If this category has sub-categories, append all their pages as well
             if parent['cat_subcats'] > 0 and depth != 0:
                 query = 'SELECT page.page_title as "parent_category" FROM categorylinks INNER JOIN page ON page.page_id = categorylinks.cl_from WHERE categorylinks.cl_to = %s AND page.page_namespace = 14'
-                self.rcursor = db.execute(self.rcursor, query, (parent['cat_title'],))
-                subcats = self.rcursor.fetchall()
+                rc = self.rdb.execute(query, (parent['cat_title'],))
+                subcats = rc.fetchall()
                 for subcat in subcats:
                     self.getPagesInCategory(subcat['parent_category'], cat_id, depth = depth-1)
 
-        self.rcursor.close()
+        #rc.close()
         return None
 
     def insertPages(self, pages, cat_id):
         # Format the data
-        self.lcursor = db.getCursorForDB(localDb, self.getName())
         values = []
         space  = []
         for p in pages:
@@ -136,25 +126,24 @@ class syncProjects(threading.Thread):
         if len(pages):
             out("%s - [%s] Inserting %s pages." % (self.getName(), self.project, str( len(pages) )))
             query = 'INSERT INTO project_pages (pp_id, pp_project_id, pp_parent_category, pp_parent_category_id) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE pp_id = pp_id'
-            self.lcursor = db.execute(self.lcursor, query, values)
-            self.lcursor.close()
+            lc = self.ldb.execute(query, values)
+            #lc.close()
 
 def main():
     # First, clear out projects and project pages
-    lcursor = db.getCursorForDB(localDb)
-    rcursor = db.getCursorForDB(remoteDb)
+    ldb = db(localDb)
+    rdb = db(remoteDb)
 
     out("Clearing old projects and project pages from local DB")
     query = 'DELETE FROM project; DELETE FROM project_pages;'
-    lcursor = db.execute(lcursor, query)
-    lcursor.close()
+    lc = ldb.execute("DELETE FROM project")
+    lc = ldb.execute("DELETE FROM project_pages")
 
     # Then, fetch current projects from the toolserver
-    out("Fetching projects from toolserver")
+    out("Fetching projects from labs server")
     query = '(SELECT page.page_id, page.page_title, revision.rev_timestamp FROM page INNER JOIN category ON page.page_title = category.cat_title LEFT JOIN revision ON rev_page = page_id WHERE page_namespace = 4 AND page_title LIKE "WikiProject_%%" GROUP BY page_id) UNION (SELECT page.page_id, page.page_title, revision.rev_timestamp FROM page INNER JOIN categorylinks ON page.page_id = categorylinks.cl_from LEFT JOIN revision on rev_page = page_id WHERE categorylinks.cl_to = "Active_WikiProjects" AND page.page_namespace = 4 AND page.page_title NOT LIKE "WikiProject_%%" GROUP BY page_id) ORDER BY page_title ASC'
-    rcursor = db.execute(rcursor, query)
-    rows = rcursor.fetchall()
-    rcursor.close()
+    rc = rdb.execute(query)
+    rows = rc.fetchall()
 
     # Format the data
     values = []
@@ -165,12 +154,10 @@ def main():
         values += [str(r['page_id']), r['page_title'], str(r['rev_timestamp'])]
         projects.append( [r['page_id'], r['page_title']] )
 
-    # Insert TS projects into local DB
+    # Insert WP projects into local DB
     query = 'INSERT INTO project (p_id, p_title, p_created) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE p_id = p_id'
     out("Inserting projects in local db")
-    lcursor = db.getCursorForDB(localDb)
-    lcursor = db.execute(lcursor, query, values)
-    lcursor.close()
+    lc = ldb.execute(query, values)
 
     # Finally, populate pages for current projects in local db
     for i in range(10):
@@ -184,6 +171,9 @@ def main():
 
     # Wait on the queue until everything is finished
     queue.join()
+
+    ldb.close()
+    rdb.close()
 
 if __name__ == "__main__":
     main()

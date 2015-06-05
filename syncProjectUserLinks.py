@@ -24,6 +24,11 @@ transcluded on either of the above, as well as all corresponding talk pages.
 from pycommon.util.util import *
 from pycommon.db.db import db
 
+# Make sure we're dealing with utf-8 strings
+import sys
+reload(sys)
+sys.setdefaultencoding("utf-8")
+
 # Allow threading
 import Queue
 import threading
@@ -31,6 +36,22 @@ import time
 
 # We'll need to grab user links from Wikipedia API
 import urllib2
+# Need the unquote_plus function
+import urllib
+# Mediawiki parser to turn wikitext into html
+"""
+templates = {}
+allowed_tags = []
+allowed_self_closing_tags = []
+allowed_attributes = []
+interwiki = {'en': 'http://en.wikipedia.org/wiki/'}
+namespaces = {}
+from mediawiki_parser.preprocessor import make_parser
+preprocessor = make_parser(templates)
+from mediawiki_parser.html import make_parser
+parser = make_parser(allowed_tags, allowed_self_closing_tags, allowed_attributes, interwiki, namespaces)
+"""
+
 # And BeautifulSoup to parse the returned html
 from bs4 import BeautifulSoup
 # Regular expressions needed to parse user links
@@ -52,7 +73,8 @@ def iriToUri(iri):
         for parti, part in enumerate(parts))
 ## END MAGIC
 
-threads = 10
+debug = 0
+threads = 1
 queue = Queue.Queue(threads)
 ww = get_ww()
 localDb = "reflex_relations_2014"
@@ -84,102 +106,115 @@ class syncUserLinks(threading.Thread):
             self.p_id = project["p_id"]
             self.p_title = project["p_title"]
 
-            # Grab the history for project page links so we can skip already parsed revisions
-            query = "SELECT * FROM project_page_links_history WHERE pplh_project_id = %s"
-            lc = self.ldb.execute(query, (project["p_id"]))
-            history = {}
-            rows = lc.fetchall()
-            for row in rows:
-                history[row["pplh_page_id"]] = row["pplh_revision"]
+            # First, update the project_and_template_pages for this project (will
+            # include all project pages, sub pages, templates/modules transcluded
+            # on those pages, and corresponding talk pages)
+            project_pages = self.updateProjectAndTemplatePages(project)
 
-            # Grab all the pages and sub-pages for this project (including Talk namespace)
-            out("[%s] %s - Fetching pages and transclusions for project." % (project["p_title"], self.getName()))
-            query = "SELECT page_id, page_title, page_namespace, page_is_redirect FROM page WHERE page_namespace IN (4,5) AND (page_title = %s OR page_title LIKE %s) ORDER BY page_title ASC"
-            rc1 = self.rdb1.execute(query, (self.rdb1.escape_string(project["p_title"]), self.rdb1.escape_string(project["p_title"] + "/%%")))
-            page_dict = {}
-            while True:
-                pages = rc1.fetchmany(1000)
-                if not pages:
-                    break
-
-                for page in pages:
-                    # If this page is a redirect grab the target page
-                    if page["page_is_redirect"] == 1:
-                        page = self.getRedirectTo(page)
-                    # If we couldn't find a target page for a redirect, skip this page
-                    if page["page_is_redirect"] == -1:
-                        continue
-                    # -1 is page not found, 0 is page is article, 1 is template/module
-                    page_dict[page["page_id"]] = 0
-
-                    # We'll also want to grab all templates/modules transcluded on this page,
-                    # which we'll go through after these pages
-                    # Note: templatelinks table tl_from should be the id of the project or sub-page, 
-                    # tl_namespace and tl_title will be what we want to see if bots edited, 
-                    # as /that's/ what's going to show up in the tl_from page (the WP page).
-                    # So, first get all the templates that are transcluded on project pages
-
-                    # Note #2: We won't know /when/ the template was added to the project page, 
-                    # so we'll add all revisions to that template.  This means that it's possible 
-                    # that user links may be over-reported, in that we'll include links that were 
-                    # added to a template before that template was added to the project page.
-                    query = "SELECT t.page_id, t.page_title, t.page_namespace, t.page_is_redirect FROM templatelinks JOIN page AS p ON tl_from = p.page_id JOIN page AS t ON tl_title = t.page_title AND tl_namespace = t.page_namespace WHERE tl_from = %s GROUP BY page_id"
-                    rc2 = self.rdb1.execute(query, (page["page_id"]))
-                    templates = rc2.fetchall()
-                    for template in templates:
-                        # Also grab potential redirects from templates
-                        if template["page_is_redirect"] == 1:
-                            template = self.getRedirectTo(template)
-                        # If we couldn't find the target page for a redirect, skip this template
-                        if template["page_is_redirect"] == -1:
-                            continue
-                        # -1 is page not found, 0 is page is article, 1 is template/module
-                        page_dict[template["page_id"]] = 1
-
-            # At this point, page_dict has the IDs of all pages, Talk pages, and templates
-            # transcluded on either of those pages.
-            # NEXT, we'll want to grab all the revisions to each of these pages to
-            # find any user links added or removed, /after/ the last revision in the 
-            # project_page_links_history table, if it exists.
+            # Then, for each page, grab user links after the last sync'd revision
             i = 0
-            for page_id in page_dict:
+            for page_id in project_pages:
                 i += 1
-                query = "SELECT rev_id, rev_page, rev_user, rev_user_text, rev_timestamp FROM revision WHERE rev_page = %s"
-                last = 0
-                if page_id in history:
-                    last = history[page_id]
-                    query += " AND rev_id > %s" % (history[page_id])
-                out("[%s] %s - Page %s of %s, searching for user links after revision %s." % (project["p_title"], self.getName(), i, len(page_dict), last))
-                rc3 = self.rdb1.execute(query, (page_id))
+                query = "SELECT plh_revision FROM page_links_history WHERE plh_page_id = %s"
+                lc = self.ldb.execute(query, (page_id))
+                row = lc.fetchone()
+                synced_to = 0
+                if row:
+                    synced_to = row["plh_revision"]
+
+                # Next, check for more recent revisions than the last recorded revision
+                out("[%s] %s - Page %s of %s, searching for user links after revision %s (%s:%s)." % (project["p_title"], self.getName(), i, len(project_pages), synced_to, project_pages[page_id]["page_namespace"], project_pages[page_id]["page_title"]))
+
+                query = "SELECT rev_id, rev_page, rev_user, rev_user_text, rev_timestamp FROM revision WHERE rev_page = %s AND rev_id > %s"
+                rc = self.rdb1.execute(query, (page_id, synced_to))
 
                 while True:
-                    revs = rc3.fetchmany(1000)
+                    revs = rc.fetchmany(1000)
                     if not revs:
                         break
                     values = []
                     space = []
                     for rev in revs:
                         # For each revision, get any user links that were added
-                        links   = self.getUserLinksFromRevision(rev, page_dict[page_id])
+                        links = self.getUserLinksFromRevision(rev)
                         values += links
-                        space  += ["(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"] * (len(links) / 10)
+                        space  += ["(%s,%s,%s,%s,%s,%s,%s)"] * (len(links) / 7)
 
                         # Insert the users from this revision, if any were found
                         if len(space) > 0:
-                            out("[%s] Inserting %s user links from project revision %s" % (project["p_title"], len(space), rev["rev_id"]))
-                            query = "INSERT INTO project_user_links (pm_user_id,pm_user_name,pm_link_rev,pm_link_date,pm_link_removed,pm_added_by,pm_added_by_name,pm_project_id,pm_page_id,pm_is_transclusion) VALUES %s ON DUPLICATE KEY UPDATE pm_user_id = pm_user_id" % (",".join(space))
+                            out("[%s] Inserting %s user links from revision %s (%s:%s)" % (project["p_title"], len(space), rev["rev_id"], project_pages[page_id]["page_namespace"], project_pages[page_id]["page_title"]))
+                            query = "INSERT INTO page_user_links (pul_user_id,pul_user_name,pul_link_rev,pul_link_date,pul_rev_user,pul_rev_user_name,pul_page_id) VALUES %s ON DUPLICATE KEY UPDATE pul_user_id = pul_user_id" % (",".join(space))
                             lc = self.ldb.execute(query, values)
                             values = []
                             space = []
 
-                        # Update project_page_links_history
-                        query = "INSERT INTO project_page_links_history (pplh_project_id, pplh_page_id, pplh_revision) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE pplh_revision = %s"
-                        lc = self.ldb.execute(query, (project["p_id"], page_id, rev["rev_id"], rev["rev_id"]))
+                        # Update page_links_history for this page
+                        query = "INSERT INTO page_links_history (plh_page_id, plh_revision) VALUES (%s,%s) ON DUPLICATE KEY UPDATE plh_revision = %s"
+                        lc = self.ldb.execute(query, (page_id, rev["rev_id"], rev["rev_id"]))
 
 
             # Aaaaand, we're done
             out("[%s] %s - Completed inserting user links" % (project["p_title"], self.getName()))
             self.queue.task_done()
+
+    def updateProjectAndTemplatePages(self, project):
+        project_pages = {}
+
+        out("[%s] %s - Updating pages and transclusions for project." % (project["p_title"], self.getName()))
+
+        # Clear the table first (we won't track historical transclusions)
+        query = "DELETE FROM project_and_template_pages"
+        lc = self.ldb.execute(query)
+        # Fetch project pages and sub-pages
+        query = "SELECT page_id, page_title, page_namespace, page_is_redirect FROM page WHERE page_namespace IN (4,5) AND (page_title = %s OR page_title LIKE %s) ORDER BY page_title ASC"
+        rc1 = self.rdb1.execute(query, (project["p_title"], project["p_title"] + "/%%"))
+        pages = rc1.fetchall()
+        values = []
+        space = []
+        for page in pages:
+            # If this page is a redirect grab the target page
+            if page["page_is_redirect"] == 1:
+                page = self.getRedirectTo(page)
+            # If we couldn't find a target page for a redirect, skip this page
+            if page["page_is_redirect"] == -1:
+                continue
+            # Add the page to our hash
+            project_pages[page["page_id"]] = page
+            values += [project["p_id"], page["page_id"]]
+            space += ["(%s,%s)"]
+
+            # We'll also want to grab all templates/modules transcluded on this page,
+            # which we'll go through after these pages
+            # Note: templatelinks table tl_from should be the id of the project or sub-page, 
+            # tl_namespace and tl_title will be what we want to see if bots edited, 
+            # as /that's/ what's going to show up in the tl_from page (the WP page).
+            # So, first get all the templates that are transcluded on project pages
+
+            # Note #2: We won't know /when/ the template was added to the project page, 
+            # so we'll add all revisions to that template.  This means that it's possible 
+            # that user links may be over-reported, in that we'll include links that were 
+            # added to a template before that template was added to the project page.
+            query = "SELECT t.page_id, t.page_title, t.page_namespace, t.page_is_redirect FROM templatelinks JOIN page AS p ON tl_from = p.page_id JOIN page AS t ON tl_title = t.page_title AND tl_namespace = t.page_namespace WHERE tl_from = %s GROUP BY page_id"
+            rc2 = self.rdb1.execute(query, (page["page_id"]))
+            templates = rc2.fetchall()
+            for template in templates:
+                # Also grab potential redirects from transcluded pages
+                if template["page_is_redirect"] == 1:
+                    template = self.getRedirectTo(template)
+                # If we couldn't find a target page for a redirect, skip this template
+                if template["page_is_redirect"] == -1:
+                    continue
+                # Add the page to our hash
+                project_pages[template["page_id"]] = template
+                values += [project["p_id"], template["page_id"]]
+                space += ["(%s,%s)"]
+
+        # Add all the project and template pages to the local db
+        query = "INSERT INTO project_and_template_pages (ptp_project_id,ptp_page_id) VALUES %s ON DUPLICATE KEY UPDATE ptp_page_id = ptp_page_id" % (",".join(space))
+        lc = self.ldb.execute(query, values)
+
+        # Finally, return the pages
+        return project_pages
 
     def getRedirectTo(self, page):
         query = "SELECT page_id, page_namespace, page_title, page_is_redirect FROM redirect JOIN page ON rd_title = page_title AND rd_namespace = page_namespace WHERE rd_from = %s"
@@ -193,51 +228,62 @@ class syncUserLinks(threading.Thread):
             return self.getRedirectTo(row)
         return row
 
-    def getUserLinksFromRevision(self, rev, transclusion):
-        wp_api_base = "http://en.wikipedia.org/w/index.php?curid=%s&diff=prev&oldid=%s&diffonly=1"
+    # The new form of this function will view the full rendered text of a wikipage, and will
+    # return all user links that exist on that page for each revision -
+    # (further parsing can be handled client side).
+    def getUserLinksFromRevision(self, rev):
+        # Setup the url
+        #wp_api_base = "http://en.wikipedia.org/w/index.php?curid=%s&diff=prev&oldid=%s&diffonly=1"
+        #wp_api_url = wp_api_base % (rev["rev_page"], rev["rev_id"])
+        wp_api_base = "https://en.wikipedia.org/w/index.php?curid=%s&oldid=%s"
         wp_api_url = wp_api_base % (rev["rev_page"], rev["rev_id"])
+        if debug == 1:
+            out("    Revision url: %s" % (wp_api_url))
         # Call the url - the first line opens the url but also handles unicode urls
         try:
             call = urllib2.urlopen(iriToUri(wp_api_url))
         except urllib2.HTTPError, e:
             out("[%s]   Failed to request revision diff with error %s" % (self.p_title, e.code))
+            out("[%s]   URL: %s" % (self.p_title, wp_api_url))
             out("[%s]   Error: %s" % (self.p_title, traceback.format_exc()))
+            raise
         else:
             api_answer = call.read()
-            #encoding = call.headers['content-type'].split('charset=')[-1]
-            encoding = "UTF-8"
-            api_answer = unicode(api_answer, encoding)
+            api_answer = unicode(api_answer, "UTF-8")
 
             # api_answer will be the response from the Wikipedia API - we'll need to pull out all
             # links to user pages, get the user ID of that link, format and return.
             soup = BeautifulSoup(api_answer)
 
-            # Pull links that may have been ADDED
-            # Example link added: https://en.wikipedia.org/w/index.php?curid=4766818&diff=prev&oldid=48735062&diffonly=1
-            links = []
-            adds = soup.find_all("td", attrs={"class": "diff-addedline"})
-            for add in adds:
-                # Look for user links added in this td
-                users = re.findall("[\[\{]User[\|:]([^\|\]\}\/]+)", add.text)
-                # If we found any, grab the user id for each one
-                for user in users:
+            # The full text of the page at the current revision will be in a div
+            # with the id "mw-content-text". Grab that and pull all user links out.
+            # Also, make sure we don't include automatic documentation in page text
+            # (For example, look at Template:User - we would only want to return the
+            # result of the /actual/ template, since that's what would be transcluded).
+            full = soup.find(id="mw-content-text")
+            if full.find(id="template-documentation") is not None:
+                full.find(id="template-documentation").extract()
+            links = full.find_all("a")
+            user_links = []
+            for link in links:
+                # Make sure it's a link to the base of a user page
+                url = urllib.unquote_plus(link.get("href"))
+                url = link.get("href")
+                # Make sure it's a link to the base of a user page
+                if url[0:11] == "/wiki/User:" and url[11:].find("/") == -1:
+                    if debug == 1:
+                        out("        Found user link: %s" % (url))
+                    user = url[11:].replace("_", " ")
                     uid = self.getUserId(user)
-                    # And finally, add each user to the links array
-                    links += [uid, user, rev["rev_id"], rev["rev_timestamp"], 0, rev["rev_user"], rev["rev_user_text"], self.p_id, rev["rev_page"], transclusion]
+                    # Finally, add it to the user_links array
+                    user_links += [uid, user, rev["rev_id"], rev["rev_timestamp"], rev["rev_user"], rev["rev_user_text"], rev["rev_page"]]
+                else:
+                    if debug == 1:
+                        out("        Found non-user link: %s" % (url))
 
-            # Pull links that may have been REMOVED
-            removes = soup.find_all("td", attrs={"class": "diff-deletedline"})
-            for remove in removes:
-                # Look for user links removed in this td
-                users = re.findall("[\[\{]User[\|:]([^\|\]\}\/]+)", remove.text)
-                # If we found any, grab the user id for each one
-                for user in users:
-                    uid = self.getUserId(user)
-                    # And finally, add each user to the links array
-                    links += [uid, user, rev["rev_id"], rev["rev_timestamp"], 1, rev["rev_user"], rev["rev_user_text"], self.p_id, rev["rev_page"], transclusion]
-
-            # Once we've parsed all the links for the revision, return the array suitable for inserting into db
-            return links
+            # Once we've parsed all the links for the revision, 
+            # return the array suitable for inserting into db
+            return user_links
         # Or, if we failed to request the page, just return an empty array
         return []
 
@@ -304,6 +350,7 @@ class syncUserLinks(threading.Thread):
                 if row:
                     user_cache[u] = row["tu_id"]
                     user_cache[user] = row["tu_id"]
+                    out("[%s]    Found name from user page '%s'" % (self.p_title, u))
                     return row["tu_id"]
                 else:
                     user_cache[u] = 0
@@ -332,8 +379,13 @@ def main():
     Cats: 4766818
 
     (161220, 4224987, 6235048, 258844, 5633357)
+
+    Women's health: 46768646
+    Human Computer Interaction: 42114934
     """
     query = "SELECT * FROM project ORDER BY p_title ASC"
+    query = "SELECT * FROM project WHERE p_id = 42114934"
+
     lc = ldb.execute(query)
     rows = lc.fetchall()
     for row in rows:
