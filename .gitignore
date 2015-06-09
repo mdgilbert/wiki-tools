@@ -1,4 +1,5 @@
 *settings.py
 *.pyc
 *.swp
+sync_*.log
 core

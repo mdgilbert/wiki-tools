@@ -38,19 +38,6 @@ import time
 import urllib2
 # Need the unquote_plus function
 import urllib
-# Mediawiki parser to turn wikitext into html
-"""
-templates = {}
-allowed_tags = []
-allowed_self_closing_tags = []
-allowed_attributes = []
-interwiki = {'en': 'http://en.wikipedia.org/wiki/'}
-namespaces = {}
-from mediawiki_parser.preprocessor import make_parser
-preprocessor = make_parser(templates)
-from mediawiki_parser.html import make_parser
-parser = make_parser(allowed_tags, allowed_self_closing_tags, allowed_attributes, interwiki, namespaces)
-"""
 
 # And BeautifulSoup to parse the returned html
 from bs4 import BeautifulSoup
@@ -74,7 +61,7 @@ def iriToUri(iri):
 ## END MAGIC
 
 debug = 0
-threads = 1
+threads = 4
 queue = Queue.Queue(threads)
 ww = get_ww()
 localDb = "reflex_relations_2014"
@@ -142,7 +129,7 @@ class syncUserLinks(threading.Thread):
 
                         # Insert the users from this revision, if any were found
                         if len(space) > 0:
-                            out("[%s] Inserting %s user links from revision %s (%s:%s)" % (project["p_title"], len(space), rev["rev_id"], project_pages[page_id]["page_namespace"], project_pages[page_id]["page_title"]))
+                            out("[%s] %s Links: %s, Date: %s, Page: %s:%s" % (project["p_title"], self.getName(), len(space), rev["rev_timestamp"][:8], project_pages[page_id]["page_namespace"], project_pages[page_id]["page_title"]))
                             query = "INSERT INTO page_user_links (pul_user_id,pul_user_name,pul_link_rev,pul_link_date,pul_rev_user,pul_rev_user_name,pul_page_id) VALUES %s ON DUPLICATE KEY UPDATE pul_user_id = pul_user_id" % (",".join(space))
                             lc = self.ldb.execute(query, values)
                             values = []
@@ -152,7 +139,6 @@ class syncUserLinks(threading.Thread):
                         query = "INSERT INTO page_links_history (plh_page_id, plh_revision) VALUES (%s,%s) ON DUPLICATE KEY UPDATE plh_revision = %s"
                         lc = self.ldb.execute(query, (page_id, rev["rev_id"], rev["rev_id"]))
 
-
             # Aaaaand, we're done
             out("[%s] %s - Completed inserting user links" % (project["p_title"], self.getName()))
             self.queue.task_done()
@@ -161,12 +147,11 @@ class syncUserLinks(threading.Thread):
         project_pages = {}
 
         out("[%s] %s - Updating pages and transclusions for project." % (project["p_title"], self.getName()))
+        query = "UPDATE project_and_template_pages SET ptp_removed = 1 WHERE ptp_project_id = %s"
+        lc = self.ldb.execute(query, (project["p_id"]))
 
-        # Clear the table first (we won't track historical transclusions)
-        query = "DELETE FROM project_and_template_pages"
-        lc = self.ldb.execute(query)
         # Fetch project pages and sub-pages
-        query = "SELECT page_id, page_title, page_namespace, page_is_redirect FROM page WHERE page_namespace IN (4,5) AND (page_title = %s OR page_title LIKE %s) ORDER BY page_title ASC"
+        query = "SELECT page_id, page_title, page_namespace, page_is_redirect FROM page WHERE page_namespace IN (4) AND (page_title = %s OR page_title LIKE %s) ORDER BY page_title ASC"
         rc1 = self.rdb1.execute(query, (project["p_title"], project["p_title"] + "/%%"))
         pages = rc1.fetchall()
         values = []
@@ -180,8 +165,8 @@ class syncUserLinks(threading.Thread):
                 continue
             # Add the page to our hash
             project_pages[page["page_id"]] = page
-            values += [project["p_id"], page["page_id"]]
-            space += ["(%s,%s)"]
+            values += [project["p_id"], page["page_id"], 0]
+            space += ["(%s,%s,%s)"]
 
             # We'll also want to grab all templates/modules transcluded on this page,
             # which we'll go through after these pages
@@ -206,12 +191,16 @@ class syncUserLinks(threading.Thread):
                     continue
                 # Add the page to our hash
                 project_pages[template["page_id"]] = template
-                values += [project["p_id"], template["page_id"]]
-                space += ["(%s,%s)"]
+                values += [project["p_id"], template["page_id"], 0]
+                space += ["(%s,%s,%s)"]
 
         # Add all the project and template pages to the local db
-        query = "INSERT INTO project_and_template_pages (ptp_project_id,ptp_page_id) VALUES %s ON DUPLICATE KEY UPDATE ptp_page_id = ptp_page_id" % (",".join(space))
+        query = "INSERT INTO project_and_template_pages (ptp_project_id,ptp_page_id,ptp_removed) VALUES %s ON DUPLICATE KEY UPDATE ptp_page_id = ptp_page_id" % (",".join(space))
         lc = self.ldb.execute(query, values)
+
+        # Remove outdated pages from project_and_template_pages
+        query = "DELETE FROM project_and_template_pages WHERE ptp_removed = 1"
+        lc = self.ldb.execute(query)
 
         # Finally, return the pages
         return project_pages
@@ -246,6 +235,7 @@ class syncUserLinks(threading.Thread):
             out("[%s]   Failed to request revision diff with error %s" % (self.p_title, e.code))
             out("[%s]   URL: %s" % (self.p_title, wp_api_url))
             out("[%s]   Error: %s" % (self.p_title, traceback.format_exc()))
+            self.queue.task_done()
             raise
         else:
             api_answer = call.read()
@@ -312,6 +302,7 @@ class syncUserLinks(threading.Thread):
             print("\n\nERROR: user type = "+str(type(user))+", user_under type = " + str(type(user_under)) + "\n")
             out("[%s]   Failed to parse string: %s, %s" % (self.p_title, user_under, user_space))
             out("[%s]   Error: %s" % (self.p_title, traceback.format_exc()))
+            self.queue.task_done()
             raise Exception('bad', 'bad')
 
         row = lc.fetchone()
@@ -350,7 +341,7 @@ class syncUserLinks(threading.Thread):
                 if row:
                     user_cache[u] = row["tu_id"]
                     user_cache[user] = row["tu_id"]
-                    out("[%s]    Found name from user page '%s'" % (self.p_title, u))
+                    out("[%s]   Found name from user page '%s'" % (self.p_title, u))
                     return row["tu_id"]
                 else:
                     user_cache[u] = 0
@@ -382,9 +373,10 @@ def main():
 
     Women's health: 46768646
     Human Computer Interaction: 42114934
+    Bibliographical Database: 33107712
     """
     query = "SELECT * FROM project ORDER BY p_title ASC"
-    query = "SELECT * FROM project WHERE p_id = 42114934"
+    #query = "SELECT * FROM project WHERE p_id IN (33107712, 42114934)"
 
     lc = ldb.execute(query)
     rows = lc.fetchall()

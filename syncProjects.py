@@ -119,13 +119,13 @@ class syncProjects(threading.Thread):
         values = []
         space  = []
         for p in pages:
-            space.append("(%s,%s,%s,%s)")
-            values += [ str(p['page_id']), str(cat_id), p['parent_category'], str(p['parent_category_id']) ]
+            space.append("(%s,%s,%s,%s,%s)")
+            values += [ str(p['page_id']), str(cat_id), p['parent_category'], str(p['parent_category_id']),0 ]
 
         # Insert the pages
         if len(pages):
-            out("%s - [%s] Inserting %s pages." % (self.getName(), self.project, str( len(pages) )))
-            query = 'INSERT INTO project_pages (pp_id, pp_project_id, pp_parent_category, pp_parent_category_id) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE pp_id = pp_id'
+            #out("%s - [%s] Inserting %s pages." % (self.getName(), self.project, str( len(pages) )))
+            query = 'INSERT INTO project_pages (pp_id, pp_project_id, pp_parent_category, pp_parent_category_id, pp_removed) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE pp_id = pp_id'
             lc = self.ldb.execute(query, values)
             #lc.close()
 
@@ -139,9 +139,14 @@ def main():
     lc = ldb.execute("DELETE FROM project")
     lc = ldb.execute("DELETE FROM project_pages")
 
+    out("Setting removed boolean flag to 1 for all projects and their pages.")
+    out("This will allow us to clear old pages later.")
+    lc = ldb.execute("UPDATE project SET p_removed = 1")
+    lc = ldb.execute("UPDATE project_pages SET pp_removed = 1")
+
     # Then, fetch current projects from the toolserver
     out("Fetching projects from labs server")
-    query = '(SELECT page.page_id, page.page_title, revision.rev_timestamp FROM page INNER JOIN category ON page.page_title = category.cat_title LEFT JOIN revision ON rev_page = page_id WHERE page_namespace = 4 AND page_title LIKE "WikiProject_%%" GROUP BY page_id) UNION (SELECT page.page_id, page.page_title, revision.rev_timestamp FROM page INNER JOIN categorylinks ON page.page_id = categorylinks.cl_from LEFT JOIN revision on rev_page = page_id WHERE categorylinks.cl_to = "Active_WikiProjects" AND page.page_namespace = 4 AND page.page_title NOT LIKE "WikiProject_%%" GROUP BY page_id) ORDER BY page_title ASC'
+    query = '(SELECT page.page_id, page.page_title, revision.rev_timestamp FROM page INNER JOIN category ON page.page_title = category.cat_title LEFT JOIN revision ON rev_page = page_id WHERE page_namespace = 4 AND page_title LIKE "WikiProject_%%" GROUP BY page_id) UNION (SELECT page.page_id, page.page_title, revision.rev_timestamp FROM page INNER JOIN categorylinks ON page.page_id = categorylinks.cl_from LEFT JOIN revision on rev_page = page_id WHERE categorylinks.cl_to = "Active_WikiProjects" AND page.page_namespace = 4 GROUP BY page_id) ORDER BY page_title ASC'
     rc = rdb.execute(query)
     rows = rc.fetchall()
 
@@ -150,13 +155,13 @@ def main():
     space = []
     projects = []
     for r in rows:
-        space.append("(%s,%s,%s)")
-        values += [str(r['page_id']), r['page_title'], str(r['rev_timestamp'])]
+        space.append("(%s,%s,%s,%s)")
+        values += [str(r['page_id']), r['page_title'], str(r['rev_timestamp']), 0]
         projects.append( [r['page_id'], r['page_title']] )
 
     # Insert WP projects into local DB
-    query = 'INSERT INTO project (p_id, p_title, p_created) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE p_id = p_id'
-    out("Inserting projects in local db")
+    query = 'INSERT INTO project (p_id, p_title, p_created, p_removed) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE p_id = p_id'
+    out("Updating projects in local db")
     lc = ldb.execute(query, values)
 
     # Finally, populate pages for current projects in local db
@@ -171,6 +176,11 @@ def main():
 
     # Wait on the queue until everything is finished
     queue.join()
+
+    # When we're finally all done, remove projects or their pages which no longer exist
+    out("Clearing outdated projects and their pages.")
+    lc = ldb.execute("DELETE FROM project WHERE p_removed = 1")
+    lc = ldb.execute("DELETE FROM project_pages WHERE pp_removed = 1")
 
     ldb.close()
     rdb.close()
