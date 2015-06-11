@@ -61,7 +61,7 @@ def iriToUri(iri):
 ## END MAGIC
 
 debug = 0
-threads = 4
+threads = 6
 queue = Queue.Queue(threads)
 ww = get_ww()
 localDb = "reflex_relations_2014"
@@ -220,7 +220,7 @@ class syncUserLinks(threading.Thread):
     # The new form of this function will view the full rendered text of a wikipage, and will
     # return all user links that exist on that page for each revision -
     # (further parsing can be handled client side).
-    def getUserLinksFromRevision(self, rev):
+    def getUserLinksFromRevision(self, rev, err_time=60):
         # Setup the url
         #wp_api_base = "http://en.wikipedia.org/w/index.php?curid=%s&diff=prev&oldid=%s&diffonly=1"
         #wp_api_url = wp_api_base % (rev["rev_page"], rev["rev_id"])
@@ -232,11 +232,17 @@ class syncUserLinks(threading.Thread):
         try:
             call = urllib2.urlopen(iriToUri(wp_api_url))
         except urllib2.HTTPError, e:
-            out("[%s]   Failed to request revision diff with error %s" % (self.p_title, e.code))
+            out("[%s]   %s - Failed to request revision diff with error %s" % (self.p_title, self.getName(), e.code))
             out("[%s]   URL: %s" % (self.p_title, wp_api_url))
             out("[%s]   Error: %s" % (self.p_title, traceback.format_exc()))
-            self.queue.task_done()
-            raise
+            # If this is a service unavailable error, try again in increasing increments
+            if e.code == 503:
+                out("[%s]   Will attempt to fetch user links after %s second pause..." % (err_time))
+                time.sleep(err_time)
+                return self.getUserLinksFromRevision(rev, err_time*2)
+            else:
+                self.queue.task_done()
+                #raise
         else:
             api_answer = call.read()
             api_answer = unicode(api_answer, "UTF-8")
