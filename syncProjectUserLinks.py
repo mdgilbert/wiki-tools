@@ -237,7 +237,7 @@ class syncUserLinks(threading.Thread):
             out("[%s]   Error: %s" % (self.p_title, traceback.format_exc()))
             # If this is a service unavailable error, try again in increasing increments
             if e.code == 503:
-                out("[%s]   Will attempt to fetch user links after %s second pause..." % (err_time))
+                out("[%s]   Will attempt to fetch user links after %s second pause..." % (self.p_title, err_time))
                 time.sleep(err_time)
                 return self.getUserLinksFromRevision(rev, err_time*2)
             else:
