@@ -134,10 +134,10 @@ def main():
     ldb = db(localDb)
     rdb = db(remoteDb)
 
-    out("Clearing old projects and project pages from local DB")
-    query = 'DELETE FROM project; DELETE FROM project_pages;'
-    lc = ldb.execute("DELETE FROM project")
-    lc = ldb.execute("DELETE FROM project_pages")
+    #out("Clearing old projects and project pages from local DB")
+    #query = 'DELETE FROM project; DELETE FROM project_pages;'
+    #lc = ldb.execute("DELETE FROM project")
+    #lc = ldb.execute("DELETE FROM project_pages")
 
     out("Setting removed boolean flag to 1 for all projects and their pages.")
     out("This will allow us to clear old pages later.")

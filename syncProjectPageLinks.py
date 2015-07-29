@@ -16,6 +16,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 """
+FOR FINAL PAPER
+
 This script is intended to get all USER LINKS to on project pages, sub-pages, and templates
 transcluded on either of the above, as well as all corresponding talk pages.
 """
@@ -61,12 +63,13 @@ def iriToUri(iri):
 ## END MAGIC
 
 debug = 0
-threads = 6
+threads = 8
 queue = Queue.Queue(threads)
 ww = get_ww()
 localDb = "reflex_relations_2014"
 remoteDb = "enwiki_p_local"
 user_cache = {}
+page_cache = {}
 
 class syncUserLinks(threading.Thread):
     """ Threaded approach to syncing user links """
@@ -102,12 +105,12 @@ class syncUserLinks(threading.Thread):
             i = 0
             for page_id in project_pages:
                 i += 1
-                query = "SELECT plh_revision FROM page_links_history WHERE plh_page_id = %s"
+                query = "SELECT cplh_revision FROM coord_project_links_history WHERE cplh_page_id = %s"
                 lc = self.ldb.execute(query, (page_id))
                 row = lc.fetchone()
                 synced_to = 0
                 if row:
-                    synced_to = row["plh_revision"]
+                    synced_to = row["cplh_revision"]
 
                 # Next, check for more recent revisions than the last recorded revision
                 out("[%s] %s - Page %s of %s, searching for user links after revision %s (%s:%s)." % (project["p_title"], self.getName(), i, len(project_pages), synced_to, project_pages[page_id]["page_namespace"], project_pages[page_id]["page_title"]))
@@ -123,20 +126,20 @@ class syncUserLinks(threading.Thread):
                     space = []
                     for rev in revs:
                         # For each revision, get any user links that were added
-                        links = self.getUserLinksFromRevision(rev)
+                        links = self.getPageLinksFromRevision(rev)
                         values += links
-                        space  += ["(%s,%s,%s,%s,%s,%s,%s)"] * (len(links) / 7)
+                        space  += ["(%s,%s,%s,%s,%s,%s,%s,%s)"] * (len(links) / 8)
 
-                        # Insert the users from this revision, if any were found
+                        # Insert links from this revision, if any were found
                         if len(space) > 0:
                             out("[%s] %s Links: %s, Date: %s, Page: %s:%s" % (project["p_title"], self.getName(), len(space), rev["rev_timestamp"][:8], project_pages[page_id]["page_namespace"], project_pages[page_id]["page_title"]))
-                            query = "INSERT INTO page_user_links (pul_user_id,pul_user_name,pul_link_rev,pul_link_date,pul_rev_user,pul_rev_user_name,pul_page_id) VALUES %s ON DUPLICATE KEY UPDATE pul_user_id = pul_user_id" % (",".join(space))
+                            query = "INSERT INTO coord_project_links (cpl_link_page_id, cpl_link_page_text, cpl_link_page_namespace, cpl_link_rev, cpl_link_date, cpl_rev_user, cpl_rev_user_name, cpl_page_id) VALUES %s ON DUPLICATE KEY UPDATE cpl_link_page_id = cpl_link_page_id" % (",".join(space))
                             lc = self.ldb.execute(query, values)
                             values = []
                             space = []
 
                         # Update page_links_history for this page
-                        query = "INSERT INTO page_links_history (plh_page_id, plh_revision) VALUES (%s,%s) ON DUPLICATE KEY UPDATE plh_revision = %s"
+                        query = "INSERT INTO coord_project_links_history (cplh_page_id, cplh_revision) VALUES (%s,%s) ON DUPLICATE KEY UPDATE cplh_revision = %s"
                         lc = self.ldb.execute(query, (page_id, rev["rev_id"], rev["rev_id"]))
 
             # Aaaaand, we're done
@@ -146,12 +149,12 @@ class syncUserLinks(threading.Thread):
     def updateProjectAndTemplatePages(self, project):
         project_pages = {}
 
-        out("[%s] %s - Updating pages and transclusions for project." % (project["p_title"], self.getName()))
-        query = "UPDATE project_and_template_pages SET ptp_removed = 1 WHERE ptp_project_id = %s"
-        lc = self.ldb.execute(query, (project["p_id"]))
+        out("[%s] %s - Fetching pages and transclusions for project." % (project["p_title"], self.getName()))
+        #query = "UPDATE project_and_template_pages SET ptp_removed = 1 WHERE ptp_project_id = %s"
+        #lc = self.ldb.execute(query, (project["p_id"]))
 
         # Fetch project pages and sub-pages
-        query = "SELECT page_id, page_title, page_namespace, page_is_redirect FROM page WHERE page_namespace IN (4) AND (page_title = %s OR page_title LIKE %s) ORDER BY page_title ASC"
+        query = "SELECT page_id, page_title, page_namespace, page_is_redirect FROM page WHERE page_namespace IN (4,5) AND (page_title = %s OR page_title LIKE %s) ORDER BY page_title ASC"
         rc1 = self.rdb1.execute(query, (project["p_title"], project["p_title"] + "/%%"))
         pages = rc1.fetchall()
         values = []
@@ -195,12 +198,12 @@ class syncUserLinks(threading.Thread):
                 space += ["(%s,%s,%s)"]
 
         # Add all the project and template pages to the local db
-        query = "INSERT INTO project_and_template_pages (ptp_project_id,ptp_page_id,ptp_removed) VALUES %s ON DUPLICATE KEY UPDATE ptp_page_id = ptp_page_id" % (",".join(space))
-        lc = self.ldb.execute(query, values)
+        #query = "INSERT INTO project_and_template_pages (ptp_project_id,ptp_page_id,ptp_removed) VALUES %s ON DUPLICATE KEY UPDATE ptp_page_id = ptp_page_id" % (",".join(space))
+        #lc = self.ldb.execute(query, values)
 
         # Remove outdated pages from project_and_template_pages
-        query = "DELETE FROM project_and_template_pages WHERE ptp_removed = 1"
-        lc = self.ldb.execute(query)
+        #query = "DELETE FROM project_and_template_pages WHERE ptp_removed = 1"
+        #lc = self.ldb.execute(query)
 
         # Finally, return the pages
         return project_pages
@@ -220,7 +223,7 @@ class syncUserLinks(threading.Thread):
     # The new form of this function will view the full rendered text of a wikipage, and will
     # return all user links that exist on that page for each revision -
     # (further parsing can be handled client side).
-    def getUserLinksFromRevision(self, rev, err_time=60):
+    def getPageLinksFromRevision(self, rev, err_time=60):
         # Setup the url
         #wp_api_base = "http://en.wikipedia.org/w/index.php?curid=%s&diff=prev&oldid=%s&diffonly=1"
         #wp_api_url = wp_api_base % (rev["rev_page"], rev["rev_id"])
@@ -239,7 +242,7 @@ class syncUserLinks(threading.Thread):
             if e.code == 503:
                 out("[%s]   Will attempt to fetch user links after %s second pause..." % (self.p_title, err_time))
                 time.sleep(err_time)
-                return self.getUserLinksFromRevision(rev, err_time*2)
+                return self.getPageLinksFromRevision(rev, err_time*2)
             else:
                 self.queue.task_done()
                 #raise
@@ -260,28 +263,65 @@ class syncUserLinks(threading.Thread):
             if full.find(id="template-documentation") is not None:
                 full.find(id="template-documentation").extract()
             links = full.find_all("a")
-            user_links = []
+            page_links = []
             for link in links:
-                # Make sure it's a link to the base of a user page
-                url = urllib.unquote_plus(link.get("href"))
+                # For this script, we'll include all links to base pages (i.e., we /will/
+                # include /wiki/User:test, but /won't/ include links to /wiki/User:test/sub).
+                # Additionally, we'll include /all/ links within /wiki, including those to
+                # User pages, Wikipedia pages, Article pages, etc.
                 url = link.get("href")
-                # Make sure it's a link to the base of a user page
-                if url[0:11] == "/wiki/User:" and url[11:].find("/") == -1:
+                # Make sure it's a link to Wikipedia, no red links
+                if url[0:6] == "/wiki/":
                     if debug == 1:
-                        out("        Found user link: %s" % (url))
-                    user = url[11:].replace("_", " ")
-                    uid = self.getUserId(user)
-                    # Finally, add it to the user_links array
-                    user_links += [uid, user, rev["rev_id"], rev["rev_timestamp"], rev["rev_user"], rev["rev_user_text"], rev["rev_page"]]
-                else:
-                    if debug == 1:
-                        out("        Found non-user link: %s" % (url))
+                        out("        Found link: %s" % (url))
+                    namespace = ""
+                    namespace_id = 0
+                    page_title = url[6:]
+                    # Handle links to different namespaces
+                    if url[6:].find(":") != -1:
+                        index = url[6:].find(":")
+                        namespace = url[6:][:index]
+                        namespace_id = namespace_to_id(namespace)
+                        page_title = url[6:][index+1:]
+                        if namespace_id == -1:
+                            #out("        Couldn't parse namespace from url %s" % (url))
+                            continue
+                    # Find the page id linked to
+                    pid = self.getPageId(page_title, namespace_id)
+                    if pid == -1:
+                        continue
+                    # Finally, add it to the page_links array
+                    page_links += [pid, page_title, namespace_id, rev["rev_id"], rev["rev_timestamp"], rev["rev_user"], rev["rev_user_text"], rev["rev_page"]]
+
 
             # Once we've parsed all the links for the revision, 
             # return the array suitable for inserting into db
-            return user_links
+            return page_links
         # Or, if we failed to request the page, just return an empty array
         return []
+
+    def getPageId(self, page, namespace_id):
+        t_page = page
+        try:
+            t_page = page.encode("utf8")
+        except:
+            pass
+        page = t_page
+        if page in page_cache:
+            return page_cache[page]
+
+        #
+        # Next, try to get the page id from local page table
+        query = "SELECT * FROM ts_pages WHERE tp_title = %s AND tp_namespace = %s"
+        lc = self.ldb.execute(query, (self.ldb.escape_string(page), namespace_id))
+        row = lc.fetchone()
+        if row:
+            page_cache[page] = row["tp_id"]
+            return row["tp_id"]
+
+        #
+        # That's it. If we can't find the page, return -1
+        return -1
 
     def getUserId(self, user):
         # Clean characters from the user string
@@ -384,6 +424,8 @@ def main():
     #query = "SELECT * FROM project ORDER BY p_title ASC"
     #query = "SELECT * FROM project WHERE p_id IN (33107712, 42114934)"
     query = 'select * from project where p_title in ("WikiProject_Feminism", "WikiProject_Piracy", "WikiProject_Medicine", "WikiProject_Plants", "WikiProject_Chemistry", "WikiProject_Spoken_Wikipedia", "WikiProject_Countering_systemic_bias", "WikiProject_Copyright_Cleanup", "WikiProject_Missing_encyclopedic_articles", "WikiProject_Outreach")'
+
+    #query = "SELECT * FROM project WHERE p_title IN ('WikiProject_Plants')"
 
     lc = ldb.execute(query)
     rows = lc.fetchall()
