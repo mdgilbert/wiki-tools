@@ -88,8 +88,11 @@ class syncProjects(threading.Thread):
         pages = ()
 
         # Get basic category information
-        query = 'SELECT cat_id, cat_title, cat_pages, cat_subcats FROM category WHERE category.cat_title = %s'
-        rc = self.rdb.execute(query, (category,))
+        # Try to query for the category name (i.e., WikiProject_Astronomical_objects) as
+        # well as the name without WikiProject (i.e., Astronomical_objects)
+        abbrev_category = category.replace("WikiProject_", "")
+        query = 'SELECT cat_id, cat_title, cat_pages, cat_subcats FROM category WHERE category.cat_title = %s OR category.cat_title = %s'
+        rc = self.rdb.execute(query, (category, abbrev_category))
         parent = rc.fetchone()
         if parent:
             # Get the sub-pages
@@ -125,7 +128,7 @@ class syncProjects(threading.Thread):
         # Insert the pages
         if len(pages):
             #out("%s - [%s] Inserting %s pages." % (self.getName(), self.project, str( len(pages) )))
-            query = 'INSERT INTO project_pages (pp_id, pp_project_id, pp_parent_category, pp_parent_category_id, pp_removed) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE pp_id = pp_id'
+            query = 'INSERT INTO project_pages (pp_id, pp_project_id, pp_parent_category, pp_parent_category_id, pp_removed) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE pp_id = pp_id, pp_removed = 0'
             lc = self.ldb.execute(query, values)
             #lc.close()
 
@@ -160,7 +163,7 @@ def main():
         projects.append( [r['page_id'], r['page_title']] )
 
     # Insert WP projects into local DB
-    query = 'INSERT INTO project (p_id, p_title, p_created, p_removed) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE p_id = p_id'
+    query = 'INSERT INTO project (p_id, p_title, p_created, p_removed) VALUES ' + ','.join(space) + ' ON DUPLICATE KEY UPDATE p_id = p_id, p_removed = 0'
     out("Updating projects in local db")
     lc = ldb.execute(query, values)
 
